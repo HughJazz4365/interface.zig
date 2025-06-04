@@ -10,13 +10,13 @@ pub fn build(b: *std.Build) !void {
         .root_source_file = b.path("src/interface.zig"),
     });
     const exe_mod = b.createModule(.{
-        .root_source_file = b.path("src/example_printer.zig"),
+        .root_source_file = b.path("src/example.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{.{ .name = "interface", .module = mod }},
     });
     const exe = b.addExecutable(.{
-        .name = "itest",
+        .name = "example",
         .root_module = exe_mod,
     });
     b.installArtifact(exe);
