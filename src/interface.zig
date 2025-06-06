@@ -158,26 +158,9 @@ pub const Func = struct {
     pub fn matchToFn(self: Func, F: type, T: type) error{ Rtype, Args, ErrorType }!Tuple(&.{ SelfType, bool }) {
         const new_func = fromFn(self.name, @typeInfo(F).@"fn");
 
-        const self_error_set: ?Type.ErrorUnion = switch (@typeInfo(self.rtype)) {
-            .error_union => |e| e,
-            else => null,
-        };
-        const self_rtype = if (self_error_set) |e| e.payload else self.rtype;
-        const base_rtype: type, const can_error: bool = sep: {
-            switch (@typeInfo(new_func.rtype)) {
-                .error_union => |e| {
-                    //error if interface func cant return an error but source function can
-                    if (self_error_set) |se| {
-                        if (isErrorSuperset(se.error_set, e.error_set)) {
-                            break :sep .{ e.payload, true };
-                        } else return error.ErrorType;
-                    } else return error.ErrorType;
-                },
-                else => break :sep .{ new_func.rtype, false },
-            }
-        };
         //get an error union
-        if (base_rtype != self_rtype) return error.Rtype; //return null;
+        const comp_result = try compareReturnTypesCheckErrors(self.rtype, new_func.rtype);
+        if (!comp_result.rtypes_match) return error.Rtype; //return null;
         if (new_func.args.len == 0 and self.args.len == 0) return .none;
 
         var new_args = new_func.args;
@@ -190,8 +173,9 @@ pub const Func = struct {
             };
         };
         if (self_type != .none) new_args = new_args[1..];
-        return .{ if (sliceEql(type, new_args, self.args)) self_type else return error.Args, can_error };
+        return .{ if (sliceEql(type, new_args, self.args)) self_type else return error.Args, comp_result.can_error };
     }
+
     fn getFunctionPtr(comptime self: Func, comptime self_type: SelfType, comptime T: type, comptime can_error: bool) type {
         const tuple = Tuple(self.args);
         //if self type is none function doest need to accept void_ptr as argument
@@ -218,6 +202,33 @@ pub const Func = struct {
         };
     }
 };
+///separates error sets and payload types
+///checks if interface field return type`s error set is a superset of source function return type`s error set
+///and compares payload types
+fn compareReturnTypesCheckErrors(interface_rtype: type, source_rtype: type) error{ErrorType}!struct { rtypes_match: bool, can_error: bool } {
+    const interface_error_union: ?Type.ErrorUnion = switch (@typeInfo(interface_rtype)) {
+        .error_union => |e| e,
+        else => null,
+    };
+    const interface_rtype_payload = if (interface_error_union) |e| e.payload else interface_rtype;
+    const source_rtype_payload: type, const can_error: bool = sep: {
+        switch (@typeInfo(source_rtype)) {
+            .error_union => |e| {
+                //error if interface func cant return an error but source function can
+                if (interface_error_union) |se| {
+                    if (isErrorSuperset(se.error_set, e.error_set)) {
+                        break :sep .{ e.payload, true };
+                    } else return error.ErrorType;
+                } else return error.ErrorType;
+            },
+            else => break :sep .{ source_rtype, false },
+        }
+    };
+    return .{
+        .rtypes_match = interface_rtype_payload == source_rtype_payload,
+        .can_error = can_error,
+    };
+}
 fn isErrorSuperset(comptime Superset: type, comptime Subset: type) bool {
     const superset = @typeInfo(Superset).error_set orelse return true;
     const subset = @typeInfo(Subset).error_set orelse return false;
