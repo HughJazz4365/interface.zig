@@ -1,9 +1,10 @@
 //TODO: better error messages
+//dont wanna do this tbh
 const std = @import("std");
 
-pub const ptr_field_name = "_";
-pub const self_ptr_field: StructField = .{
-    .name = ptr_field_name,
+pub const void_ptr_field_name = "_";
+pub const void_ptr_field: StructField = .{
+    .name = void_ptr_field_name,
     .type = *anyopaque,
     .default_value_ptr = emptyVoidPtr(*anyopaque),
     .is_comptime = false,
@@ -28,7 +29,7 @@ pub fn Interface(comptime interface: anytype) type {
             const T, const is_const = getSourceType(@TypeOf(source));
 
             var result: Implementation = .{};
-            @field(result, ptr_field_name) = @as(*anyopaque, @ptrCast(@alignCast(@constCast(source))));
+            @field(result, void_ptr_field_name) = @as(*anyopaque, @ptrCast(@alignCast(@constCast(source))));
 
             matchFields(
                 Implementation,
@@ -51,8 +52,8 @@ pub fn Interface(comptime interface: anytype) type {
     };
 }
 
-pub fn ImplementationType(comptime fields: []const NT, comptime functions: []const Func) type {
-    var struct_fields: []const StructField = &.{self_ptr_field};
+pub fn ImplementationType(comptime fields: []const NameType, comptime functions: []const Func) type {
+    var struct_fields: []const StructField = &.{void_ptr_field};
     for (functions) |function| {
         struct_fields = struct_fields ++ &[_]StructField{function.toStructField()};
     }
@@ -68,7 +69,7 @@ pub fn ImplementationType(comptime fields: []const NT, comptime functions: []con
 }
 
 //assigns all the field pointers to the implementation struct fields
-pub fn matchFields(I: type, impl_ptr: *I, fields: []const NT, T: type, source: *const T) void {
+pub fn matchFields(I: type, impl_ptr: *I, fields: []const NameType, T: type, source: *const T) void {
     const struct_fields = @typeInfo(T).@"struct".fields;
     for (fields) |i_field| {
         const full_field_name = @typeName(T) ++ "." ++ i_field[0];
@@ -102,8 +103,8 @@ pub fn matchFuncs(I: type, impl_ptr: *I, comptime functions: []const Func, T: ty
 }
 
 //extract all the information about interface fields and functions
-pub fn extractFieldsFunctions(comptime interface: anytype) Tuple(&.{ []const NT, []const Func }) {
-    var fields: []const NT = &.{};
+pub fn extractFieldsFunctions(comptime interface: anytype) Tuple(&.{ []const NameType, []const Func }) {
+    var fields: []const NameType = &.{};
     var functions: []const Func = &.{};
 
     for (@typeInfo(@TypeOf(interface)).@"struct".fields) |f| {
@@ -111,7 +112,7 @@ pub fn extractFieldsFunctions(comptime interface: anytype) Tuple(&.{ []const NT,
         compAssert(@TypeOf(interface_field_type) == type, "interface field can only be a type");
         switch (@typeInfo(interface_field_type)) {
             .@"fn" => |func| functions = functions ++ &[_]Func{.fromFn(f.name, func)},
-            else => fields = fields ++ &[_]NT{.{ f.name, interface_field_type }},
+            else => fields = fields ++ &[_]NameType{.{ f.name, interface_field_type }},
         }
     }
 
@@ -202,6 +203,7 @@ pub const Func = struct {
         };
     }
 };
+
 ///separates error sets and payload types
 ///checks if interface field return type`s error set is a superset of source function return type`s error set
 ///and compares payload types
@@ -240,7 +242,7 @@ fn isErrorSuperset(comptime Superset: type, comptime Subset: type) bool {
     return true;
 }
 const SelfType = enum { none, value, constptr, ptr };
-pub fn NTtoStructField(comptime nt: NT) StructField {
+pub fn NTtoStructField(comptime nt: NameType) StructField {
     return .{
         .name = nt[0],
         .type = nt[1],
@@ -249,9 +251,7 @@ pub fn NTtoStructField(comptime nt: NT) StructField {
         .alignment = @alignOf(nt[1]),
     };
 }
-pub const NT = Tuple(&.{ Str, type });
 
-//zig utils
 fn typesFromParams(params: []const Type.Fn.Param) []const type {
     var args: []const type = &.{}; //&.{anytype}
     for (params) |param| {
@@ -270,6 +270,7 @@ fn emptyVoidPtr(comptime T: type) *const anyopaque {
     return @ptrCast(&t);
 }
 
+pub const NameType = Tuple(&.{ Str, type });
 const Type = std.builtin.Type;
 const StructField = Type.StructField;
 const Str = [:0]const u8;
