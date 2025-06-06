@@ -1,3 +1,4 @@
+//TODO: better error messages
 const std = @import("std");
 
 pub const ptr_field_name = "_";
@@ -87,13 +88,14 @@ pub fn matchFuncs(I: type, impl_ptr: *I, comptime functions: []const Func, T: ty
         inline for (decls) |decl| {
             if (comptime !sliceEql(u8, i_field.name, decl.name)) continue;
             const F = @TypeOf(@field(T, i_field.name));
-            const st = (comptime i_field.matchToFn(F, T)) catch |err|
+            const self_type, const can_error = (comptime i_field.matchToFn(F, T)) catch |err|
                 switch (err) {
                     error.Rtype => @compileError("return type mismatch in " ++ full_function_name),
                     error.Args => @compileError("argument type mismatch in " ++ full_function_name),
+                    error.ErrorType => @compileError("error mismatch in " ++ full_function_name),
                 };
-            if (st == .ptr and is_const) @compileError("function " ++ full_function_name ++ " requires mutable pointer, but source is immutable");
-            @field(impl_ptr, i_field.name) = i_field.getFunctionPtr(st, T);
+            if (self_type == .ptr and is_const) @compileError("function " ++ full_function_name ++ " requires mutable pointer, but source is immutable");
+            @field(impl_ptr, i_field.name) = &(i_field.getFunctionPtr(self_type, T, can_error).f);
             break;
         } else @compileError("missing function " ++ full_function_name);
     }
@@ -153,9 +155,29 @@ pub const Func = struct {
         };
     }
     ///T - the type F belongs to(for checking methods)
-    pub fn matchToFn(self: Func, F: type, T: type) error{ Rtype, Args }!SelfType {
+    pub fn matchToFn(self: Func, F: type, T: type) error{ Rtype, Args, ErrorType }!Tuple(&.{ SelfType, bool }) {
         const new_func = fromFn(self.name, @typeInfo(F).@"fn");
-        if (new_func.rtype != self.rtype) return error.Rtype; //return null;
+
+        const self_error_set: ?Type.ErrorUnion = switch (@typeInfo(self.rtype)) {
+            .error_union => |e| e,
+            else => null,
+        };
+        const self_rtype = if (self_error_set) |e| e.payload else self.rtype;
+        const base_rtype: type, const can_error: bool = sep: {
+            switch (@typeInfo(new_func.rtype)) {
+                .error_union => |e| {
+                    //error if interface func cant return an error but source function can
+                    if (self_error_set) |se| {
+                        if (isErrorSuperset(se.error_set, e.error_set)) {
+                            break :sep .{ e.payload, true };
+                        } else return error.ErrorType;
+                    } else return error.ErrorType;
+                },
+                else => break :sep .{ new_func.rtype, false },
+            }
+        };
+        //get an error union
+        if (base_rtype != self_rtype) return error.Rtype; //return null;
         if (new_func.args.len == 0 and self.args.len == 0) return .none;
 
         var new_args = new_func.args;
@@ -168,32 +190,44 @@ pub const Func = struct {
             };
         };
         if (self_type != .none) new_args = new_args[1..];
-        return if (sliceEql(type, new_args, self.args)) self_type else return error.Args;
+        return .{ if (sliceEql(type, new_args, self.args)) self_type else return error.Args, can_error };
     }
-    pub fn getFunctionPtr(comptime self: Func, comptime self_type: SelfType, T: type) *const self.toFn() {
-        const swf = self.structWithFunctions(T, self_type).f;
-        return &swf;
-    }
-    fn structWithFunctions(comptime self: Func, comptime T: type, comptime self_type: SelfType) type {
+    fn getFunctionPtr(comptime self: Func, comptime self_type: SelfType, comptime T: type, comptime can_error: bool) type {
         const tuple = Tuple(self.args);
+        //if self type is none function doest need to accept void_ptr as argument
+        //but that could break everything since that depends on source type
         return struct {
             pub fn f(void_ptr: *anyopaque, args: tuple) self.rtype {
                 switch (self_type) {
                     .none => {
-                        @call(.auto, @field(T, self.name), args);
+                        if (can_error) {
+                            try @call(.auto, @field(T, self.name), args);
+                        } else @call(.auto, @field(T, self.name), args);
                     },
                     else => {
                         const t_ptr: *T = @ptrCast(@alignCast(void_ptr));
                         var new_args: Tuple(&[_]type{if (self_type == .value) T else *T} ++ self.args) = undefined;
                         new_args[0] = if (self_type == .value) t_ptr.* else t_ptr;
                         inline for (0..self.args.len) |i| new_args[i + 1] = args[i];
-                        @call(.auto, @field(T, self.name), new_args);
+                        if (can_error) {
+                            try @call(.auto, @field(T, self.name), new_args);
+                        } else @call(.auto, @field(T, self.name), new_args);
                     }
                 }
             }
         };
     }
 };
+fn isErrorSuperset(comptime Superset: type, comptime Subset: type) bool {
+    const superset = @typeInfo(Superset).error_set orelse return true;
+    const subset = @typeInfo(Subset).error_set orelse return false;
+    inline for (subset) |err| {
+        inline for (superset) |s_err| {
+            if (sliceEql(u8, err.name, s_err.name)) break;
+        } else return false;
+    }
+    return true;
+}
 const SelfType = enum { none, value, constptr, ptr };
 pub fn NTtoStructField(comptime nt: NT) StructField {
     return .{
